@@ -1,14 +1,62 @@
 use shared_defs::{PollResult, Tag};
 use std::future::Future;
+use std::mem::{transmute, MaybeUninit};
 use std::ops::DerefMut;
 use std::pin::Pin;
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
+extern "C" {
+    #[no_mangle]
+    // returns *mut Box<dyn Future<Output = u64>>
+    fn two() -> u64;
+    #[no_mangle]
+    fn poll_two(fut: u64, cx: u64, result_out: *mut PollResult);
+}
+
+pub struct OurRawWaker {
+    data: *const (),
+    _vtable: &'static RawWakerVTable,
+}
+
+struct HostFuture {
+    future_ptr: u64,
+}
+
+impl Future for HostFuture {
+    type Output = u64;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+        println!("polling HostFuture");
+        let mut result_out = MaybeUninit::uninit();
+        // YOLO
+        let raw_waker: &OurRawWaker = unsafe { transmute(cx.waker()) };
+        let host_cx = unsafe { Box::from_raw(raw_waker.data as *mut u64) };
+        unsafe {
+            poll_two(self.future_ptr, *host_cx, result_out.as_mut_ptr());
+        }
+        println!("HostFuture polled");
+        Box::into_raw(host_cx);
+        let result = unsafe { result_out.assume_init() };
+        match result.tag {
+            Tag::Pending => {
+                println!("HostFuture pending");
+                Poll::Pending
+            }
+            Tag::Ready => {
+                println!("HostFuture ready");
+                Poll::from(result.result)
+            }
+        }
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn async_main() -> u32 {
     async fn body() -> u64 {
-        let forty = async { 40 };
-        let two = async { 2 };
+        let forty = async { 40u64 };
+        let two = HostFuture {
+            future_ptr: unsafe { two() },
+        };
         forty.await + two.await
     }
     let fut = Box::new(body()) as Box<dyn Future<Output = u64>>;

@@ -1,8 +1,53 @@
-use lucet_runtime::{DlModule, Instance, Limits, MmapRegion, Region, Val};
+use lucet_runtime::{lucet_hostcalls, DlModule, Instance, Limits, MmapRegion, Region, Val};
 use shared_defs::{PollResult, Tag};
 use std::future::Future;
+use std::ops::DerefMut;
+use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use tokio::fs::File;
+use tokio::io::AsyncReadExt;
+
+lucet_hostcalls! {
+    #[no_mangle]
+    pub unsafe extern "C" fn two(&mut _vmctx,) -> *mut AssertUnwindSafe<Box<dyn Future<Output = u64>>> {
+        async fn body() -> u64 {
+            println!("opening file");
+            let mut f = File::open("two.txt").await.unwrap();
+            println!("file opened");
+            let mut s = String::new();
+            f.read_to_string(&mut s).await.unwrap();
+            s.trim_end().parse::<u64>().unwrap()
+        }
+        let fut = Box::new(body()) as Box<dyn Future<Output = u64>>;
+        // return a *mut Box<dyn Future<Output = u64>> so that the returned pointer is thin
+        Box::into_raw(Box::new(AssertUnwindSafe(fut)))
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn poll_two(
+        &mut vmctx,
+        fut: *mut AssertUnwindSafe<Box<dyn Future<Output = u64>>>,
+        cx: *mut Context,
+        result_out: u32, // *mut PollResult
+    ) -> () {
+        dbg!(cx);
+        let mut fut = Box::from_raw(fut);
+        let pin_fut = Pin::new_unchecked(fut.deref_mut().deref_mut().deref_mut());
+        let poll_result = match pin_fut.poll(cx.as_mut().unwrap()) {
+            Poll::Pending => PollResult {
+                tag: Tag::Pending,
+                result: 0,
+            },
+            Poll::Ready(result) => PollResult {
+                tag: Tag::Ready,
+                result,
+            },
+        };
+        let result_out = &mut vmctx.heap_mut()[result_out as usize] as *mut _ as *mut PollResult;
+        result_out.write(poll_result);
+    }
+}
 
 struct LucetFuture<'a> {
     inst: &'a mut Instance,
@@ -15,7 +60,8 @@ impl<'a> Future for LucetFuture<'a> {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let ptr = self.future_ptr.into();
         println!("calling poll_future");
-        match self
+        dbg!(cx as *mut _);
+        let res = match self
             .inst
             .run("poll_future", &[ptr, (cx as *mut _ as u64).into()])
         {
@@ -33,7 +79,9 @@ impl<'a> Future for LucetFuture<'a> {
                 Err(e) => Poll::from(Err(e)),
             },
             Err(e) => Poll::from(Err(e)),
-        }
+        };
+        println!("poll_future returned: {:?}", res);
+        res
     }
 }
 
@@ -49,6 +97,11 @@ async fn async_run_u64<'a>(
 
 #[tokio::main]
 async fn main() -> Result<(), lucet_runtime::Error> {
+    let mut f = File::open("two.txt").await.unwrap();
+    let mut s = String::new();
+    f.read_to_string(&mut s).await.unwrap();
+    println!("{}", s.trim_end().parse::<u64>().unwrap());
+
     let limits = Limits {
         heap_memory_size: 1024 * 1024 * 1024,
         stack_size: 8 * 1024 * 1024,
