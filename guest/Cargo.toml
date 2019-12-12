@@ -1,0 +1,8 @@
+[package]
+name = "guest"
+version = "0.1.0"
+authors = ["Adam C. Foltzer <acfoltzer@fastly.com>"]
+edition = "2018"
+
+[dependencies]
+shared-defs = { path = "../shared-defs" }
