@@ -15,3 +15,7 @@ shared-defs = { path = "./shared-defs" }
 [dependencies.tokio]
 version = "0.2"
 features = ["full"]
+
+# [dependencies.async-std]
+# version = "1.0.0"
+# features = ["attributes"]

@@ -1,3 +1,5 @@
+// use async_std::fs::File;
+// use async_std::io::prelude::ReadExt;
 use lucet_runtime::{lucet_hostcalls, DlModule, Instance, Limits, MmapRegion, Region, Val};
 use shared_defs::{PollResult, Tag};
 use std::future::Future;
@@ -31,10 +33,15 @@ lucet_hostcalls! {
         cx: *mut Context,
         result_out: u32, // *mut PollResult
     ) -> () {
+        dbg!(fut);
         dbg!(cx);
         let mut fut = Box::from_raw(fut);
+        dbg!(&fut as *const _);
         let pin_fut = Pin::new_unchecked(fut.deref_mut().deref_mut().deref_mut());
-        let poll_result = match pin_fut.poll(cx.as_mut().unwrap()) {
+        dbg!(&pin_fut as *const _);
+        let cx = cx.as_mut().unwrap();
+        dbg!(cx as *mut _);
+        let poll_result = match pin_fut.poll(cx) {
             Poll::Pending => PollResult {
                 tag: Tag::Pending,
                 result: 0,
@@ -44,8 +51,11 @@ lucet_hostcalls! {
                 result,
             },
         };
+        dbg!(&poll_result);
         let result_out = &mut vmctx.heap_mut()[result_out as usize] as *mut _ as *mut PollResult;
+        dbg!(result_out);
         result_out.write(poll_result);
+        Box::into_raw(fut);
     }
 }
 
